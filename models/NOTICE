@@ -1,0 +1,14 @@
+landmarks_classifier_europe_v1.tflite
+
+Google Landmarks classifier (Europe), version 1
+Source: https://www.kaggle.com/models/google/landmarks (variation tfLite/classifier-europe-v1)
+Copyright Google LLC
+Licensed under the Apache License, Version 2.0: https://www.apache.org/licenses/LICENSE-2.0
+
+The file is redistributed unmodified.
+
+References:
+- Cao B, Araujo A, Sim J. Unifying Deep Local and Global Features for Image Search. arXiv 2020.
+  https://arxiv.org/abs/2001.05027
+- Weyand T, Araujo A, Cao B, Sim J. Google Landmarks Dataset v2 - A Large-Scale Benchmark for
+  Instance-Level Recognition and Retrieval. CVPR 2020. https://arxiv.org/abs/2004.01804
