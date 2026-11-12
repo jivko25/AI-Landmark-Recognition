@@ -34,7 +34,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or None
 _requested_models = _list("GEMINI_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite")
 GEMINI_MODELS = [m for m in _requested_models if m in FREE_GEMINI_MODELS]
 REJECTED_GEMINI_MODELS = [m for m in _requested_models if m not in FREE_GEMINI_MODELS]
-GEMINI_TIMEOUT_S = float(os.getenv("GEMINI_TIMEOUT_S", "15"))
+GEMINI_TIMEOUT_S = float(os.getenv("GEMINI_TIMEOUT_S", "20"))
 
 VERIFY_MIN_SCORE = float(os.getenv("VERIFY_MIN_SCORE", "0.85"))
 VERIFY_MIN_MARGIN = float(os.getenv("VERIFY_MIN_MARGIN", "0.05"))

@@ -61,7 +61,7 @@ vercel dev
 | Лимит | Стойност | Какво значи тук |
 |---|---|---|
 | Размер на заявката | 4.5 MB | Качените снимки са до 4 MB (`MAX_UPLOAD_BYTES`). За по-големи снимки ползвай `url` |
-| Време на изпълнение | до 300 s (Hobby), настроено на 120 s | Най-лошият случай (бавно теглене + 2 модела Gemini + Wikipedia) е под 60 s |
+| Време на изпълнение | до 300 s (Hobby), настроено на 120 s | Най-лошият случай (бавно теглене 10 s + Gemini 45 s + Wikipedia) е под 90 s |
 | Памет | 2 GB (Hobby) | Достатъчно: моделът е 48 MB, а снимките се смаляват преди обработка |
 | Размер на функцията | 500 MB за Python | ~200 MB |
 
@@ -84,6 +84,8 @@ vercel dev
 | `"gemini_enabled": false` | Липсва `GEMINI_API_KEY` в Environment Variables или не е направен нов deploy след добавянето ѝ (**Deployments → Redeploy**) |
 | `413 FUNCTION_PAYLOAD_TOO_LARGE` | Снимката е над 4.5 MB. Смали я или подай `url` |
 | `verification.status = "error"` с „лимит“ | Изчерпан е безплатният лимит на Gemini. Ще се нулира до 24 часа. Виж [ZERO_BUDGET.md](ZERO_BUDGET.md) |
+| `verification.status = "error"` с „претоварен (грешка 503/504)“ | Google е претоварен в момента („high demand“). Временно е; опитай пак след минута |
+| `verification.status = "disputed"` | Двата Gemini модела не са съгласни. Не е грешка на сървъра: снимката е трудна. Виж [ARCHITECTURE.md](ARCHITECTURE.md#два-модела-едновременно) |
 | `504 FUNCTION_INVOCATION_TIMEOUT` | Много бавен сайт със снимката или Gemini. Свали `GEMINI_TIMEOUT_S` или `DOWNLOAD_TIMEOUT_S` |
 | Build грешка за размера | Не трябва да се случва. Ако си добавил пакети, провери с `VERCEL_ANALYZE_BUILD_OUTPUT=1` кое е голямо |
 | Логове | Vercel → проектът → **Logs** |

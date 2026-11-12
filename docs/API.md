@@ -116,6 +116,7 @@ http://localhost:8000/predict?url=https://example.com/trevi.jpg&lang=bg&verify=a
 | `name` | текст или `null` | Името на забележителността. `null`, ако Gemini каже, че на снимката няма забележителност |
 | `score` | число или `null` | Оценката на локалния модел за това име (0–1). `null`, ако Gemini е дал име, което не е сред кандидатите |
 | `source` | `local` / `gemini` / `local+gemini` | Кой е дал отговора. `local+gemini` = Gemini е потвърдил локалния модел |
+| `confident` | `true` / `false` | Дали може да се вярва на отговора. `true` само ако два независими източника са съгласни (вж. таблицата със статусите). `false` при `disputed`, `error`, `unavailable` и при `corrected` / `no_landmark`, когато е отговорил само един модел на Gemini |
 
 ### `info`: информация за забележителността
 
@@ -144,6 +145,7 @@ http://localhost:8000/predict?url=https://example.com/trevi.jpg&lang=bg&verify=a
 - `Няма информация за тази забележителност`: в Wikipedia няма подходяща статия.
 - `Няма информация за тази забележителност (Wikipedia не отговори: ...)`: временен проблем, следващата заявка ще опита пак.
 - `На снимката не е разпозната забележителност`: Gemini е казал, че няма забележителност.
+- `Не е сигурно коя е забележителността, затова не се връща информация`: статус `disputed`.
 
 ### `candidates`: суровите предложения на локалния модел
 
@@ -158,21 +160,32 @@ http://localhost:8000/predict?url=https://example.com/trevi.jpg&lang=bg&verify=a
 | `needed` | Дали резултатът е пратен за проверка |
 | `reasons` | Защо е сметнат за несигурен (празно, ако е сигурен) |
 | `status` | Виж таблицата по-долу |
-| `gemini` | Отговорът на Gemini или `null`: `model`, `landmark`, `wikipedia_title`, `matches_candidate`, `confidence` (`high`/`medium`/`low`), `reason` (на български) |
+| `gemini` | Приетият отговор на Gemini или `null`: `model`, `landmark`, `wikipedia_title`, `matches_candidate`, `confidence` (`high`/`medium`/`low`), `reason` (на български) |
+| `answers` | Всички отговори от Gemini моделите (същия формат), включително неприетите. Полезно при `disputed` |
+| `agreement` | `all` = отговорилите модели са съгласни; `single` = отговорил е само един (другият е бил претоварен или с ниска увереност); `null`, ако няма приет отговор |
 | `error` | Обяснение, ако Gemini не е помогнал |
 
 ## Статуси на проверката
 
-| `status` | Значение | `landmark.source` |
-|---|---|---|
-| `skipped` | Не е било нужно (или `verify=never`) | `local` |
-| `confirmed` | Gemini е съгласен с локалния модел | `local+gemini` |
-| `corrected` | Gemini е дал друг отговор, може и извън кандидатите | `gemini` |
-| `no_landmark` | Gemini не вижда забележителност; `landmark.name` е `null` | `gemini` |
-| `unavailable` | Gemini не е настроен; върнат е локалният резултат | `local` |
-| `error` | Лимит, таймаут или грешка в Gemini; върнат е локалният резултат | `local` |
+| `status` | Значение | `landmark.source` | `confident` |
+|---|---|---|---|
+| `skipped` | Не е било нужно (или `verify=never`) | `local` | `true` (при `verify=never` и несигурен резултат: `false`) |
+| `confirmed` | Gemini е съгласен с локалния модел | `local+gemini` | `true` |
+| `corrected` | Gemini е дал друг отговор, може и извън кандидатите | `gemini` | `true`, ако двата модела са съгласни; `false`, ако е отговорил само един (`agreement: single`) |
+| `no_landmark` | Gemini не вижда забележителност; `landmark.name` е `null` | `gemini` | като при `corrected` |
+| `disputed` | Gemini моделите не са съгласни помежду си или не са сигурни (`confidence: low`); върнат е локалният резултат **без информация** | `local` | `false` |
+| `unavailable` | Gemini не е настроен; върнат е локалният резултат | `local` | `false` |
+| `error` | Лимит, претоварване (503/504), таймаут или друга грешка в Gemini; върнат е локалният резултат | `local` | `false` |
 
-**Важно:** при `unavailable` и `error` API-то **не връща грешка**. Отговорът е 200 с локалния резултат, а `verification.error` казва какво е станало.
+**Важно:** при `disputed`, `unavailable` и `error` API-то **не връща грешка**. Отговорът е 200 с локалния резултат, `landmark.confident` е `false`, а `verification.error` казва какво е станало.
+
+Възможни съобщения в `verification.error`:
+
+- `Безплатният лимит на Gemini е изчерпан за момента ...`: грешка 429, лимитът се нулира до 24 часа.
+- `Gemini е претоварен в момента (грешка 503/504) ...`: временно претоварване от страна на Google. Опитай пак след малко.
+- `Gemini моделите не са сигурни или не са съгласни помежду си ...`: статус `disputed`.
+- `Gemini не отговори (TimeoutError) ...`: никой модел не е отговорил навреме.
+- `Gemini не е настроен (няма GEMINI_API_KEY) ...`: статус `unavailable`.
 
 ## Грешки
 

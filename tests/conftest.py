@@ -23,18 +23,16 @@ class FakeRecognizer:
 
 
 class FakeVerifier:
-    models = ["gemini-3.5-flash-lite"]
+    models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
 
-    def __init__(self, result=None, error=None):
-        self.result = result
-        self.error = error
+    def __init__(self, *answers, failures=()):
+        self.answers = list(answers)
+        self.failures = list(failures)
         self.calls = 0
 
     def verify(self, img, candidates):
         self.calls += 1
-        if self.error:
-            raise self.error
-        return self.result
+        return self.answers, self.failures
 
 
 class FakeWiki:
@@ -50,13 +48,13 @@ UNSURE = [Candidate(name="Palazzo Poli", score=0.8466), Candidate(name="Trevi Fo
 SURE = [Candidate(name="Eiffel Tower", score=0.9865), Candidate(name="Pont de Bir-Hakeim", score=0.96)]
 
 
-def gemini(landmark, wikipedia_title=None, matches=True):
+def gemini(landmark, wikipedia_title=None, matches=True, confidence="high", model="gemini-3.5-flash-lite"):
     return GeminiResult(
-        model="gemini-3.5-flash-lite",
+        model=model,
         landmark=landmark,
         wikipedia_title=wikipedia_title,
         matches_candidate=matches,
-        confidence="high",
+        confidence=confidence,
         reason="тест",
     )
 

@@ -1,6 +1,9 @@
 """Second opinion from Gemini (free tier only) when the local model is unsure."""
 
 import io
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 
 from google import genai
 from google.genai import errors, types
@@ -9,17 +12,21 @@ from app import config
 from app.schemas import GeminiResult, GeminiVerdict
 
 PROMPT = """You are verifying the output of a landmark recognition model for European landmarks.
-The model was unsure. Its top candidates (score 0-1, higher is more likely) are:
+The model was unsure and is often wrong. Its top candidates (score 0-1, higher is more likely) are:
 {candidates}
 
-Look at the photo and decide which landmark it actually shows.
+Look at the photo and decide which landmark it actually shows. The candidates may all be wrong:
+do not pick one just because it is on the list, only if you clearly recognize it.
 - If it is one of the candidates, return that candidate's exact name and set matches_candidate to true.
 - If it is a different landmark you recognize (it may be outside Europe), return its common English name
   and set matches_candidate to false.
 - If you cannot identify a specific landmark, return null for landmark and wikipedia_title.
+- Use confidence "high" only if you are sure of this exact landmark; use "low" if you are guessing.
 Photos may be taken from unusual angles or show only part of a landmark. A building that is part of,
 or directly behind, a more famous landmark (for example a palace behind a fountain) should be reported
 as the more famous landmark."""
+
+OVERLOADED = {500, 502, 503, 504}
 
 
 def verification_reasons(candidates):
@@ -39,13 +46,27 @@ class GeminiVerifier:
         if not models:
             raise ValueError("No free Gemini models configured")
         self.models = list(models)
+        self.timeout_s = timeout_s
         self.client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=int(timeout_s * 1000)))
 
-    def verify(self, img, candidates):
-        """Ask the models in order; move to the next one on timeouts, rate limits or server errors.
+    def _ask(self, model, contents, cfg):
+        # Free-tier models often answer 503/504 ("high demand") for a moment; one retry usually helps.
+        for attempt in range(2):
+            try:
+                response = self.client.models.generate_content(model=model, contents=contents, config=cfg)
+            except errors.APIError as e:
+                if e.code in OVERLOADED and attempt == 0:
+                    time.sleep(1)
+                    continue
+                raise
+            verdict = GeminiVerdict.model_validate_json(response.text)
+            return GeminiResult(model=model, **verdict.model_dump())
 
-        Free-tier latency varies a lot (the same request took 3 s and 60 s in testing), so each model
-        gets its own timeout instead of one long wait.
+    def verify(self, img, candidates):
+        """Ask all models at the same time and return (answers, errors).
+
+        Asking in parallel keeps latency at the slowest model instead of the sum, and two answers
+        let the caller catch a model that confidently names the wrong landmark.
         """
         small = img.copy()
         small.thumbnail((1024, 1024))
@@ -62,19 +83,17 @@ class GeminiVerifier:
             response_schema=GeminiVerdict,
         )
 
-        last_error = None
-        for model in self.models:
-            try:
-                response = self.client.models.generate_content(model=model, contents=contents, config=cfg)
-            except errors.APIError as e:
-                if e.code == 429 or (e.code or 0) >= 500:
-                    last_error = e
-                    continue
-                raise
-            except Exception as e:
-                # Timeouts and connection errors come from google-genai's internal HTTP client (httpx2).
-                last_error = e
-                continue
-            verdict = GeminiVerdict.model_validate_json(response.text)
-            return GeminiResult(model=model, **verdict.model_dump())
-        raise last_error
+        answers, failures = {}, []
+        pool = ThreadPoolExecutor(max_workers=len(self.models))
+        futures = {pool.submit(self._ask, m, contents, cfg): m for m in self.models}
+        try:
+            for future in as_completed(futures, timeout=self.timeout_s * 2 + 5):
+                try:
+                    answers[futures[future]] = future.result()
+                except Exception as e:
+                    failures.append(e)
+        except FuturesTimeout:
+            failures.append(TimeoutError("Gemini did not answer in time"))
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        return [answers[m] for m in self.models if m in answers], failures

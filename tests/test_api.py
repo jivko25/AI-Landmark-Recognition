@@ -21,55 +21,120 @@ def test_health(make_client):
     assert body["status"] == "ok" and body["gemini_enabled"] is True
 
 
+def api_error(code, status):
+    return errors.APIError(code, {"error": {"message": status, "status": status}})
+
+
+LITE = "gemini-3.1-flash-lite"
+
+
 def test_sure_result_skips_gemini(make_client, image_bytes):
     verifier = FakeVerifier(gemini("Something else"))
     body = post_file(make_client(FakeRecognizer(SURE), verifier), image_bytes).json()
     assert verifier.calls == 0
-    assert body["landmark"] == {"name": "Eiffel Tower", "score": 0.9865, "source": "local"}
+    assert body["landmark"] == {"name": "Eiffel Tower", "score": 0.9865, "source": "local", "confident": True}
 
 
-def test_gemini_corrects_unsure_result_and_info_uses_its_title(make_client, image_bytes):
+def test_both_models_agree_and_correct(make_client, image_bytes):
     wiki = FakeWiki()
-    verifier = FakeVerifier(gemini("Trevi Fountain", "Trevi Fountain"))
+    verifier = FakeVerifier(gemini("Trevi Fountain", "Trevi Fountain"), gemini("trevi fountain", model=LITE))
     body = post_file(make_client(FakeRecognizer(UNSURE), verifier, wiki), image_bytes).json()
-    assert body["landmark"] == {"name": "Trevi Fountain", "score": 0.8228, "source": "gemini"}
+    assert body["landmark"] == {"name": "Trevi Fountain", "score": 0.8228, "source": "gemini", "confident": True}
     assert body["verification"]["status"] == "corrected"
+    assert body["verification"]["agreement"] == "all"
+    assert len(body["verification"]["answers"]) == 2
     assert wiki.calls == [("Trevi Fountain", "Trevi Fountain", "bg")]
 
 
-def test_gemini_confirms(make_client, image_bytes):
-    verifier = FakeVerifier(gemini("palazzo poli"))
+def test_models_agree_by_wikipedia_title(make_client, image_bytes):
+    verifier = FakeVerifier(gemini("Fontana di Trevi", "Trevi Fountain"), gemini("Trevi Fountain", "Trevi Fountain", model=LITE))
+    body = post_file(make_client(FakeRecognizer(UNSURE), verifier), image_bytes).json()
+    assert body["verification"]["status"] == "corrected"
+
+
+def test_models_disagree_is_disputed(make_client, image_bytes):
+    # Real case: Defenders of Stara Zagora memorial; one model said The Brooding Soldier, the other Pantheon in Ruse.
+    wiki = FakeWiki()
+    verifier = FakeVerifier(gemini("Palazzo Poli"), gemini("Pantheon of National Revival Heroes", model=LITE))
+    body = post_file(make_client(FakeRecognizer(UNSURE), verifier, wiki), image_bytes).json()
+    assert body["verification"]["status"] == "disputed"
+    assert body["landmark"] == {"name": "Palazzo Poli", "score": 0.8466, "source": "local", "confident": False}
+    assert body["verification"]["gemini"] is None
+    assert body["info"]["found"] is False and wiki.calls == []
+
+
+def test_low_confidence_is_not_a_confirmation(make_client, image_bytes):
+    verifier = FakeVerifier(gemini("Palazzo Poli", confidence="low"))
+    body = post_file(make_client(FakeRecognizer(UNSURE), verifier), image_bytes).json()
+    assert body["verification"]["status"] == "disputed"
+    assert body["landmark"]["confident"] is False
+
+
+def test_low_confidence_answer_is_ignored_when_other_is_sure(make_client, image_bytes):
+    verifier = FakeVerifier(gemini("Trevi Fountain"), gemini("Something", confidence="low", model=LITE))
+    body = post_file(make_client(FakeRecognizer(UNSURE), verifier), image_bytes).json()
+    assert body["verification"]["status"] == "corrected"
+    assert body["verification"]["agreement"] == "single"
+    assert body["landmark"]["confident"] is False
+
+
+def test_one_model_overloaded_other_confirms(make_client, image_bytes):
+    verifier = FakeVerifier(gemini("palazzo poli"), failures=[api_error(504, "DEADLINE_EXCEEDED")])
     body = post_file(make_client(FakeRecognizer(UNSURE), verifier), image_bytes).json()
     assert body["landmark"]["source"] == "local+gemini"
+    assert body["landmark"]["confident"] is True
     assert body["verification"]["status"] == "confirmed"
+    assert body["verification"]["agreement"] == "single"
+
+
+def test_single_correction_is_not_confident(make_client, image_bytes):
+    # Real case: the other model was overloaded and this one wrongly named the Pantheon in Ruse.
+    wiki = FakeWiki()
+    verifier = FakeVerifier(gemini("Pantheon of National Revival Heroes"), failures=[api_error(503, "UNAVAILABLE")])
+    body = post_file(make_client(FakeRecognizer(UNSURE), verifier, wiki), image_bytes).json()
+    assert body["verification"]["status"] == "corrected"
+    assert body["landmark"] == {
+        "name": "Pantheon of National Revival Heroes", "score": None, "source": "gemini", "confident": False,
+    }
+    assert wiki.calls
 
 
 def test_gemini_sees_no_landmark(make_client, image_bytes):
     wiki = FakeWiki()
-    verifier = FakeVerifier(gemini(None, matches=False))
+    verifier = FakeVerifier(gemini(None, matches=False), gemini(None, matches=False, model=LITE))
     body = post_file(make_client(FakeRecognizer(UNSURE), verifier, wiki), image_bytes).json()
     assert body["landmark"]["name"] is None
+    assert body["verification"]["status"] == "no_landmark"
     assert body["info"]["found"] is False
     assert wiki.calls == []
 
 
-def test_gemini_rate_limit_falls_back_to_local(make_client, image_bytes):
-    error = errors.APIError(429, {"error": {"message": "quota", "status": "RESOURCE_EXHAUSTED"}})
-    body = post_file(make_client(FakeRecognizer(UNSURE), FakeVerifier(error=error)), image_bytes).json()
-    assert body["landmark"]["source"] == "local"
+def test_all_models_overloaded(make_client, image_bytes):
+    failures = [api_error(504, "DEADLINE_EXCEEDED"), api_error(503, "UNAVAILABLE")]
+    body = post_file(make_client(FakeRecognizer(UNSURE), FakeVerifier(failures=failures)), image_bytes).json()
     assert body["verification"]["status"] == "error"
+    assert "претоварен" in body["verification"]["error"] and "503/504" in body["verification"]["error"]
+    assert body["landmark"]["confident"] is False
+
+
+def test_gemini_rate_limit_falls_back_to_local(make_client, image_bytes):
+    failures = [api_error(429, "RESOURCE_EXHAUSTED"), api_error(503, "UNAVAILABLE")]
+    body = post_file(make_client(FakeRecognizer(UNSURE), FakeVerifier(failures=failures)), image_bytes).json()
+    assert body["landmark"]["source"] == "local"
     assert "лимит" in body["verification"]["error"]
 
 
-def test_gemini_crash_falls_back_to_local(make_client, image_bytes):
-    body = post_file(make_client(FakeRecognizer(UNSURE), FakeVerifier(error=TimeoutError())), image_bytes).json()
+def test_gemini_timeout_falls_back_to_local(make_client, image_bytes):
+    body = post_file(make_client(FakeRecognizer(UNSURE), FakeVerifier(failures=[TimeoutError()])), image_bytes).json()
     assert body["landmark"]["name"] == "Palazzo Poli"
     assert body["verification"]["status"] == "error"
+    assert "TimeoutError" in body["verification"]["error"]
 
 
 def test_no_gemini_configured(make_client, image_bytes):
     body = post_file(make_client(FakeRecognizer(UNSURE)), image_bytes).json()
     assert body["verification"]["status"] == "unavailable"
+    assert body["landmark"]["confident"] is False
 
 
 def test_verify_never_and_always(make_client, image_bytes):
